@@ -196,9 +196,20 @@ def download_step(init, step, tmpdir, tries=3):
             try:
                 client = Client(source=src, model="ifs", resol="0p25",
                                 maximum_retries=4, retry_after=15)
-                client.retrieve(date=init.strftime("%Y%m%d"), time=init.hour,
-                                stream="enfo", type=["cf", "pf"], param="2t",
-                                step=step, target=target)
+                # control and perturbed members are requested separately (a combined
+                # type=["cf","pf"] request returned only the perturbed members), then
+                # joined: concatenated GRIB messages are a valid GRIB file.
+                part = {}
+                for typ in ("cf", "pf"):
+                    part[typ] = target + "." + typ
+                    client.retrieve(date=init.strftime("%Y%m%d"), time=init.hour,
+                                    stream="enfo", type=typ, param="2t",
+                                    step=step, target=part[typ])
+                with open(target, "wb") as out:
+                    for typ in ("cf", "pf"):
+                        with open(part[typ], "rb") as fh:
+                            shutil.copyfileobj(fh, out)
+                        os.remove(part[typ])
                 return target
             except Exception as e:  # noqa: BLE001 - we retry on anything
                 last = e
@@ -219,11 +230,16 @@ def collect_temps(init, cities, workers=6, downloader=download_step, decoder=dec
             futs = [(s, ex.submit(downloader, init, s, tmp)) for s in steps]
             for s, fut in futs:            # decode serially (eccodes is not thread-safe)
                 path = fut.result()
+                seen = set()
                 for member, step, vals in decoder(path, cities, interp_holder):
+                    seen.add(member)
                     if step != s or not (0 <= member < N_MEMBERS):
                         raise RuntimeError(f"unexpected message member={member} step={step} in step {s} file")
                     temps[member, steps.index(step), :] = vals
                 os.remove(path)
+                if len(seen) != N_MEMBERS:
+                    print(f"  WARNING step {s}h file holds {len(seen)} members, "
+                          f"missing {sorted(set(range(N_MEMBERS)) - seen)[:10]}", flush=True)
                 print(f"  step {s:3d}h done", flush=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

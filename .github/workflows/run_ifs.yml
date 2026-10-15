@@ -1,0 +1,73 @@
+name: IFS direct run
+
+# Runs the ECMWF IFS ensemble download + HDD/CDD build for the latest 00Z/12Z run.
+# Primary trigger: the Google Sheet's Apps Script calls "Run workflow" at ~07:44 and ~19:44 UTC
+# (GitHub's own scheduler is unreliable, so the cron lines below are only a backup).
+# If a run was already processed, the job exits in seconds without changing anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Run date YYYYMMDD (leave blank = latest available run)"
+        required: false
+        default: ""
+      cycle:
+        description: "00 or 12 (only used when a date is given)"
+        required: false
+        default: ""
+      force:
+        description: "Re-process even if this run already exists (true/false)"
+        required: false
+        default: "false"
+  schedule:
+    - cron: "52 7 * * *"
+    - cron: "52 19 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ifs-direct
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Build run
+        env:
+          IN_DATE: ${{ github.event.inputs.date }}
+          IN_CYCLE: ${{ github.event.inputs.cycle }}
+          IN_FORCE: ${{ github.event.inputs.force }}
+        run: |
+          ARGS="--wait-minutes 60"
+          if [ -n "$IN_DATE" ]; then ARGS="$ARGS --date $IN_DATE --cycle ${IN_CYCLE:-00}"; fi
+          if [ "$IN_FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          python fetch_ifs.py $ARGS
+
+      - name: Commit results
+        run: |
+          git config user.name "ifs-bot"
+          git config user.email "ifs-bot@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "nothing new to commit"
+          else
+            git commit -m "IFS direct: new run"
+            for i in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              sleep 5
+            done
+          fi

@@ -1,11 +1,11 @@
 # ecmwf-direct
 
-ECMWF's own open-data ensemble (IFS ENS, 51 members) turned into 28-city HDD/CDD, for the
+ECMWF's own open-data ensemble (IFS ENS, 50 perturbed members) turned into 28-city HDD/CDD, for the
 "ECMWF EPS Direct v1" Google Sheet. Runs are complete at about 3:46 AM / 3:46 PM ET
 (measured Oct 11-15, see data/probe_log.csv).
 
 ## Files
-- `fetch_ifs.py` - waits for a run, downloads only 2 m temperature (6-hourly, 51 members), interpolates to the
+- `fetch_ifs.py` - waits for a run, downloads only 2 m temperature (6-hourly, 50 members), interpolates to the
   cities, builds local-day temps ((max+min)/2 per member), HDD/CDD base 65 F per member, averages, writes JSON.
 - `cities.csv` - `city,lat,lon,region,weight,cdd_weight` (weight = HDD set, cdd_weight = CDD set, 0 for the six winter-only cities; both normalised).
 - `requirements.txt` - Python packages.

@@ -3,7 +3,7 @@
 
 For one forecast run (00Z or 12Z):
   1. wait until the full 360 h run is published,
-  2. download ONLY 2 m temperature for the control + 50 perturbed members at
+  2. download ONLY 2 m temperature for the 50 perturbed members (the open data has no control for 2t) at
      6-hourly steps (ECMWF open data, AWS mirror first, ecmwf.int as fallback),
   3. interpolate the 0.25 deg grid to each city in cities.csv,
   4. build local-calendar-day temperatures per member ((max+min)/2 of the
@@ -38,7 +38,7 @@ BASES = {
     "aws": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com",
     "ecmwf": "https://data.ecmwf.int/forecasts",
 }
-N_MEMBERS = 51
+N_MEMBERS = 50   # open data holds the 50 perturbed members for 2t (no control, cf)
 MIN_AGE_H = 7.0          # a run is considered "due" this many hours after init
 
 
@@ -177,7 +177,10 @@ def decode_file(path, cities, interp_holder):
                         codes_get(h, "jDirectionIncrementInDegrees"),
                         codes_get(h, "jScansPositively") == 1, lats, lons)
                 dtype = codes_get(h, "dataType")
-                member = 0 if dtype == "cf" else int(codes_get(h, "perturbationNumber"))
+                pnum = int(codes_get(h, "perturbationNumber"))
+                if dtype == "cf" or pnum < 1:   # control is not in the open data for 2t; ignore if it appears
+                    continue
+                member = pnum - 1               # pf 1..50 -> 0..49
                 step = int(codes_get(h, "step"))
                 vals = codes_get_values(h)
                 yield member, step, k_to_f(interp_holder[0].apply(vals))
@@ -196,20 +199,9 @@ def download_step(init, step, tmpdir, tries=3):
             try:
                 client = Client(source=src, model="ifs", resol="0p25",
                                 maximum_retries=4, retry_after=15)
-                # control and perturbed members are requested separately (a combined
-                # type=["cf","pf"] request returned only the perturbed members), then
-                # joined: concatenated GRIB messages are a valid GRIB file.
-                part = {}
-                for typ in ("cf", "pf"):
-                    part[typ] = target + "." + typ
-                    client.retrieve(date=init.strftime("%Y%m%d"), time=init.hour,
-                                    stream="enfo", type=typ, param="2t",
-                                    step=step, target=part[typ])
-                with open(target, "wb") as out:
-                    for typ in ("cf", "pf"):
-                        with open(part[typ], "rb") as fh:
-                            shutil.copyfileobj(fh, out)
-                        os.remove(part[typ])
+                client.retrieve(date=init.strftime("%Y%m%d"), time=init.hour,
+                                stream="enfo", type="pf", param="2t",
+                                step=step, target=target)
                 return target
             except Exception as e:  # noqa: BLE001 - we retry on anything
                 last = e

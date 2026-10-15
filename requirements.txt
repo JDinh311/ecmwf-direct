@@ -1,0 +1,5 @@
+ecmwf-opendata>=0.3.20
+eccodes>=2.38
+numpy>=1.26
+timezonefinder>=6.5
+requests>=2.31

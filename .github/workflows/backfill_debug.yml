@@ -2,14 +2,8 @@ name: Backfill debug
 
 # Diagnostic: run ONE historical run with full output and commit the log (data/backfill_debug/).
 on:
-  workflow_dispatch:
-    inputs:
-      date:
-        description: "YYYYMMDD"
-        default: "20260331"
-      cycle:
-        description: "00 or 12"
-        default: "00"
+  push:
+    paths: ["requests/debug.txt"]      # contents: YYYYMMDD CC  (e.g. "20260331 00")
 
 permissions:
   contents: write
@@ -31,7 +25,9 @@ jobs:
           mkdir -p data/backfill_debug
           pip freeze > data/backfill_debug/pip_freeze.txt
           set +e
-          timeout 60m python fetch_ifs.py --date ${{ github.event.inputs.date }} --cycle ${{ github.event.inputs.cycle }} \
+          read D C < requests/debug.txt
+          echo "debug run $D $C"
+          timeout 60m python fetch_ifs.py --date $D --cycle $C \
             --out-dir data/backfill_debug/out --wait-minutes 0 --settle-s 0 2>&1 \
             | tr '\r' '\n' | while IFS= read -r line; do printf '%s %s\n' "$(date -u +%H:%M:%S)" "$line"; done \
             | grep -v -E '[0-9]%\|' > data/backfill_debug/log.txt

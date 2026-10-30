@@ -3,7 +3,7 @@ name: Backfill debug
 # Diagnostic: run ONE historical run with full output and commit the log (data/backfill_debug/).
 on:
   push:
-    paths: ["requests/debug.txt"]      # contents: YYYYMMDD CC  (e.g. "20260331 00")
+    paths: ["requests/debug.txt", "requests/debug.sh"]   # debug.txt: "YYYYMMDD CC" one run; debug.sh: any test commands
 
 permissions:
   contents: write
@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -25,10 +27,10 @@ jobs:
           mkdir -p data/backfill_debug
           pip freeze > data/backfill_debug/pip_freeze.txt
           set +e
-          read D C < requests/debug.txt
-          echo "debug run $D $C"
-          timeout 60m python fetch_ifs.py --date $D --cycle $C \
-            --out-dir data/backfill_debug/out --wait-minutes 0 --settle-s 0 2>&1 \
+          if git diff --name-only HEAD~1 HEAD | grep -q requests/debug.sh; then CMD="bash requests/debug.sh"; else
+            read D C < requests/debug.txt; CMD="python fetch_ifs.py --date $D --cycle $C --out-dir data/backfill_debug/out --wait-minutes 0 --settle-s 0"; fi
+          echo "debug: $CMD"
+          timeout 60m $CMD 2>&1 \
             | tr '\r' '\n' | while IFS= read -r line; do printf '%s %s\n' "$(date -u +%H:%M:%S)" "$line"; done \
             | grep -v -E '[0-9]%\|' > data/backfill_debug/log.txt
           echo "exit=${PIPESTATUS[0]}" >> data/backfill_debug/log.txt

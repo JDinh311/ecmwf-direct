@@ -1,0 +1,35 @@
+name: Backfill re-collect
+
+# Re-saves the per-day results of an earlier backfill run (from its artifacts, kept 7 days) and commits them.
+# Start by pushing requests/recollect.txt containing the run id.
+
+on:
+  push:
+    paths: ["requests/recollect.txt"]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: backfill
+  cancel-in-progress: false
+
+jobs:
+  recollect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - id: rid
+        run: echo "id=$(tr -dc 0-9 < requests/recollect.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bf-*
+          merge-multiple: true
+          path: data/backfill_new
+          run-id: ${{ steps.rid.outputs.id }}
+          github-token: ${{ github.token }}
+      - name: Merge, index, commit
+        run: bash backfill_commit.sh

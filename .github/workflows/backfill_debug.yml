@@ -1,0 +1,47 @@
+name: Backfill debug
+
+# Diagnostic: run ONE historical run with full output and commit the log (data/backfill_debug/).
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "YYYYMMDD"
+        default: "20260331"
+      cycle:
+        description: "00 or 12"
+        default: "00"
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: One historical run (log saved)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          mkdir -p data/backfill_debug
+          pip freeze > data/backfill_debug/pip_freeze.txt
+          set +e
+          timeout 60m python fetch_ifs.py --date ${{ github.event.inputs.date }} --cycle ${{ github.event.inputs.cycle }} \
+            --out-dir data/backfill_debug/out --wait-minutes 0 --settle-s 0 2>&1 \
+            | tr '\r' '\n' | while IFS= read -r line; do printf '%s %s\n' "$(date -u +%H:%M:%S)" "$line"; done \
+            | grep -v -E '[0-9]%\|' > data/backfill_debug/log.txt
+          echo "exit=${PIPESTATUS[0]}" >> data/backfill_debug/log.txt
+          tail -40 data/backfill_debug/log.txt
+      - name: Commit log
+        if: always()
+        run: |
+          git config user.name "ifs-bot"
+          git config user.email "ifs-bot@users.noreply.github.com"
+          git add data/backfill_debug
+          git commit -m "Backfill debug log" || exit 0
+          for i in 1 2 3; do git pull --rebase --autostash && git push && break; sleep 5; done

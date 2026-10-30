@@ -1,9 +1,10 @@
 """Rebuild historical IFS ENS runs (00Z + 12Z) for a date range with the normal pipeline.
 
-    python backfill.py --start 20251101 --end 20251105 --out data/backfill_part
+    python backfill.py --start 20251101 --end 20251101 --out data/backfill_part --have data/backfill/runs
 
 Each run goes through fetch_ifs.py exactly as a live run does (same cities, weights, method).
-Failures are retried once and listed in <out>/status_<start>.json; the job never stops on one bad run.
+Runs already saved in --have are skipped (so a re-run only fills gaps). A run that fails is retried
+once; each attempt is capped by --run-timeout minutes. Status goes to <out>/status_<start>.json.
 """
 import argparse
 import json
@@ -19,31 +20,41 @@ def main():
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
     ap.add_argument("--out", default="data/backfill_part")
+    ap.add_argument("--have", default="data/backfill/runs")
     ap.add_argument("--cycles", default="00,12")
+    ap.add_argument("--run-timeout", type=int, default=40, help="minutes per attempt")
     a = ap.parse_args()
     d0, d1 = datetime.strptime(a.start, "%Y%m%d"), datetime.strptime(a.end, "%Y%m%d")
-    status = {"start": a.start, "end": a.end, "ok": [], "failed": []}
+    status = {"start": a.start, "end": a.end, "ok": [], "skipped": [], "failed": [], "seconds": {}}
     d = d0
     while d <= d1:
         for cyc in a.cycles.split(","):
             tag = d.strftime("%Y%m%d") + cyc
+            if os.path.exists(os.path.join(a.have, tag + ".json")):
+                status["skipped"].append(tag)
+                continue
             cmd = [sys.executable, "fetch_ifs.py", "--date", d.strftime("%Y%m%d"), "--cycle", cyc,
                    "--out-dir", a.out, "--wait-minutes", "0", "--settle-s", "0"]
             ok = False
             for attempt in (1, 2):
                 t = time.time()
-                rc = subprocess.call(cmd)
-                print(f"== {tag} attempt {attempt}: rc={rc} in {time.time() - t:.0f}s", flush=True)
+                try:
+                    rc = subprocess.call(cmd, timeout=a.run_timeout * 60)
+                except subprocess.TimeoutExpired:
+                    rc = "timeout"
+                secs = round(time.time() - t)
+                print(f"== {tag} attempt {attempt}: rc={rc} in {secs}s", flush=True)
                 if rc == 0 and os.path.exists(os.path.join(a.out, "runs", tag + ".json")):
                     ok = True
+                    status["seconds"][tag] = secs
                     break
-                time.sleep(30)
+                time.sleep(20)
             (status["ok"] if ok else status["failed"]).append(tag)
         d += timedelta(days=1)
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, f"status_{a.start}.json"), "w") as f:
         json.dump(status, f, indent=1)
-    print(f"done: {len(status['ok'])} ok, {len(status['failed'])} failed {status['failed']}")
+    print(f"done: {len(status['ok'])} ok, {len(status['skipped'])} already had, {len(status['failed'])} failed {status['failed']}")
     return 0
 
 

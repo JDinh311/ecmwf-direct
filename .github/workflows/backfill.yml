@@ -1,8 +1,12 @@
 name: Backfill last winter
 
-# Rebuilds historical IFS ENS runs (00Z + 12Z) with the same pipeline as the live job, in parallel chunks.
+# Rebuilds historical IFS ENS runs (00Z + 12Z) with the same pipeline as the live job.
+# One small job per day (2 runs, ~15–30 min), at most MAXPAR jobs at once so live runs stay fast.
+# Runs already in data/backfill/runs are skipped, so re-running the same range only fills gaps.
 # Output: data/backfill/runs/*.json + data/backfill/index.json. The live sheet does NOT read these.
-# Default range Nov 1 2025 – Mar 31 2026 (~300 runs, ~3–5 hours wall time, free on a public repo).
+#
+# Start it either from Actions → Run workflow, or by pushing requests/backfill.txt containing
+#   START END [MAXPAR]     e.g.  20251101 20260331 6
 
 on:
   workflow_dispatch:
@@ -15,10 +19,12 @@ on:
         description: "Last date YYYYMMDD"
         required: true
         default: "20260331"
-      chunk_days:
-        description: "Days per parallel job (5 = ~10 runs, ~2 h)"
+      maxpar:
+        description: "Jobs at once (keep ≤ 8 so the live run is not slowed)"
         required: true
-        default: "5"
+        default: "6"
+  push:
+    paths: ["requests/backfill.txt"]
 
 permissions:
   contents: write
@@ -31,35 +37,47 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      chunks: ${{ steps.mk.outputs.chunks }}
+      days: ${{ steps.mk.outputs.days }}
+      maxpar: ${{ steps.mk.outputs.maxpar }}
     steps:
+      - uses: actions/checkout@v4
       - id: mk
         env:
-          START: ${{ github.event.inputs.start }}
-          END: ${{ github.event.inputs.end }}
-          CHUNK: ${{ github.event.inputs.chunk_days }}
+          IN_START: ${{ github.event.inputs.start }}
+          IN_END: ${{ github.event.inputs.end }}
+          IN_MAXPAR: ${{ github.event.inputs.maxpar }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
           import json, os
           from datetime import datetime, timedelta
-          d = datetime.strptime(os.environ["START"], "%Y%m%d"); e = datetime.strptime(os.environ["END"], "%Y%m%d")
-          n = int(os.environ["CHUNK"]); out = []
-          while d <= e:
-              z = min(e, d + timedelta(days=n - 1))
-              out.append({"start": d.strftime("%Y%m%d"), "end": z.strftime("%Y%m%d")})
-              d = z + timedelta(days=1)
-          print("chunks=" + json.dumps(out))
+          s, e, m = os.environ.get("IN_START"), os.environ.get("IN_END"), os.environ.get("IN_MAXPAR")
+          if not s:
+              parts = open("requests/backfill.txt").read().split()
+              s, e = parts[0], parts[1]
+              m = parts[2] if len(parts) > 2 else "6"
+          d, z = datetime.strptime(s, "%Y%m%d"), datetime.strptime(e, "%Y%m%d")
+          have = set(os.listdir("data/backfill/runs")) if os.path.isdir("data/backfill/runs") else set()
+          days = []
+          while d <= z:
+              tag = d.strftime("%Y%m%d")
+              if not (tag + "00.json" in have and tag + "12.json" in have):
+                  days.append(tag)
+              d += timedelta(days=1)
+          days = days[:250]
+          print("days=" + json.dumps(days or ["none"]))
+          print("maxpar=" + str(max(1, min(12, int(m or 6)))))
           EOF
 
   build:
     needs: plan
+    if: needs.plan.outputs.days != '["none"]'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 100
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: ${{ fromJSON(needs.plan.outputs.maxpar) }}
       matrix:
-        chunk: ${{ fromJSON(needs.plan.outputs.chunks) }}
+        day: ${{ fromJSON(needs.plan.outputs.days) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -67,12 +85,14 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Build runs ${{ matrix.chunk.start }}–${{ matrix.chunk.end }}
-        run: python backfill.py --start ${{ matrix.chunk.start }} --end ${{ matrix.chunk.end }} --out data/backfill_part
+      - name: Build runs for ${{ matrix.day }}
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python backfill.py --start ${{ matrix.day }} --end ${{ matrix.day }} --out data/backfill_part --have data/backfill/runs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bf-${{ matrix.chunk.start }}
+          name: bf-${{ matrix.day }}
           path: |
             data/backfill_part/runs/
             data/backfill_part/status_*.json
@@ -89,9 +109,13 @@ jobs:
         with:
           pattern: bf-*
           merge-multiple: true
-          path: data/backfill
-      - name: Index + summary
+          path: data/backfill_new
+      - name: Merge + index
         run: |
+          mkdir -p data/backfill/runs data/backfill/status
+          cp -n data/backfill_new/runs/*.json data/backfill/runs/ 2>/dev/null || true
+          cp data/backfill_new/status_*.json data/backfill/status/ 2>/dev/null || true
+          rm -rf data/backfill_new
           python3 - <<'EOF'
           import json, glob, os
           runs = []
@@ -99,11 +123,15 @@ jobs:
               j = json.load(open(f))
               runs.append({"init_utc": j["init_utc"], "cycle": j["cycle"], "file": "runs/" + os.path.basename(f),
                            "available_utc": j.get("available_utc"), "n_dates": len(j["dates"]), "members": j["members"]})
-          failed = []
-          for f in glob.glob("data/backfill/status_*.json"):
-              failed += json.load(open(f))["failed"]
-          json.dump({"runs": runs, "failed": sorted(failed)}, open("data/backfill/index.json", "w"), indent=1)
-          print(f"{len(runs)} runs collected, {len(failed)} failed: {sorted(failed)[:40]}")
+          have = {r["file"][5:-5] for r in runs}
+          failed, secs = set(), {}
+          for f in glob.glob("data/backfill/status/status_*.json"):
+              st = json.load(open(f))
+              failed |= {t for t in st.get("failed", []) if t not in have}
+              secs.update(st.get("seconds", {}))
+          med = sorted(secs.values())[len(secs) // 2] if secs else None
+          json.dump({"runs": runs, "failed": sorted(failed), "median_run_seconds": med}, open("data/backfill/index.json", "w"), indent=1)
+          print(f"{len(runs)} runs in data/backfill, still missing after retries: {sorted(failed)}; median run {med}s")
           EOF
       - name: Commit
         run: |

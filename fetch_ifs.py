@@ -33,10 +33,15 @@ BASE_F = 65.0            # HDD/CDD base, same as the v3.0 engine
 STEP_H = 6               # sampling interval used for daily values
 MAX_STEP = 360           # last forecast step (hours)
 DAILY_METHOD = "minmax"  # "minmax" = (max+min)/2 of samples, "mean" = average of samples
-SOURCES = ["aws", "ecmwf"]
+# Download sources, tried in order. Live: AWS first (fastest at release time), then ECMWF, then Google.
+# Backfill passes --sources google,azure: AWS throttles archived dates ("SlowDown") and ECMWF's own
+# server keeps only the last few days.
+SOURCES = ["aws", "ecmwf", "google"]
 BASES = {
     "aws": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com",
     "ecmwf": "https://data.ecmwf.int/forecasts",
+    "google": "https://storage.googleapis.com/ecmwf-open-data",
+    "azure": "https://ai4edataeuwest.blob.core.windows.net/ecmwf",
 }
 N_MEMBERS = 50   # open data holds the 50 perturbed members for 2t (no control, cf)
 MIN_AGE_H = 7.0          # a run is considered "due" this many hours after init
@@ -409,7 +414,14 @@ def main(argv=None):
     ap.add_argument("--settle-s", type=int, default=20)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--force", action="store_true")
-    return run(ap.parse_args(argv))
+    ap.add_argument("--sources", default="", help="comma list, e.g. google,azure (default: aws,ecmwf,google)")
+    args = ap.parse_args(argv)
+    if args.sources:
+        bad = [x for x in args.sources.split(",") if x not in BASES]
+        if bad:
+            raise SystemExit(f"unknown source(s): {bad}")
+        SOURCES[:] = args.sources.split(",")
+    return run(args)
 
 
 if __name__ == "__main__":

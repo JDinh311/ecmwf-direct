@@ -23,6 +23,7 @@ def main():
     ap.add_argument("--have", default="data/backfill/runs")
     ap.add_argument("--cycles", default="00,12")
     ap.add_argument("--run-timeout", type=int, default=40, help="minutes per attempt")
+    ap.add_argument("--sources", default="google,azure", help="mirrors for archived runs (AWS throttles old dates)")
     a = ap.parse_args()
     d0, d1 = datetime.strptime(a.start, "%Y%m%d"), datetime.strptime(a.end, "%Y%m%d")
     status = {"start": a.start, "end": a.end, "ok": [], "skipped": [], "failed": [], "seconds": {}}
@@ -34,7 +35,7 @@ def main():
                 status["skipped"].append(tag)
                 continue
             cmd = [sys.executable, "fetch_ifs.py", "--date", d.strftime("%Y%m%d"), "--cycle", cyc,
-                   "--out-dir", a.out, "--wait-minutes", "0", "--settle-s", "0"]
+                   "--out-dir", a.out, "--wait-minutes", "0", "--settle-s", "0", "--sources", a.sources]
             ok = False
             for attempt in (1, 2):
                 t = time.time()

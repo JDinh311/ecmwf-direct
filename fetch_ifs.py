@@ -52,9 +52,33 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
-def index_url(base, init, step=MAX_STEP):
+# Archive path layout. Live runs (and everything since Mar 2024) use "ifs/0p25". Older open data:
+# Feb 2024 "0p25" (no ifs/ folder), Feb 2023 - Jan 2024 "0p4-beta" (0.4 deg grid). Only the backfill hits these.
+LAYOUT = ["ifs/0p25"]
+OLD_LAYOUTS = ["ifs/0p25", "0p25", "0p4-beta"]
+LAYOUT_CUTOVER = datetime(2024, 3, 1, tzinfo=timezone.utc)
+
+
+def index_url(base, init, step=MAX_STEP, layout=None):
     d, c = init.strftime("%Y%m%d"), init.strftime("%H")
-    return f"{base}/{d}/{c}z/ifs/0p25/enfo/{d}{c}0000-{step}h-enfo-ef.index"
+    return f"{base}/{d}/{c}z/{layout or LAYOUT[0]}/enfo/{d}{c}0000-{step}h-enfo-ef.index"
+
+
+def set_layout(init, head=requests.head):
+    """Pick the archive layout for this run (probes only for runs before Mar 2024)."""
+    LAYOUT[0] = "ifs/0p25"
+    if init >= LAYOUT_CUTOVER:
+        return LAYOUT[0]
+    for lay in OLD_LAYOUTS:
+        for src in SOURCES:
+            try:
+                if head(index_url(BASES[src], init, layout=lay), timeout=20, allow_redirects=True).status_code == 200:
+                    LAYOUT[0] = lay
+                    print(f"  archive layout {lay} (found on {src})", flush=True)
+                    return lay
+            except requests.RequestException:
+                pass
+    return LAYOUT[0]
 
 
 def latest_due_init(now):
@@ -197,12 +221,19 @@ def decode_file(path, cities, interp_holder):
 def download_step(init, step, tmpdir, tries=3):
     """Download 2t for all members at one step. Returns path of a GRIB file."""
     from ecmwf.opendata import Client
+    import ecmwf.opendata.client as odc
+    lay = LAYOUT[0]
+    resol = "0p4-beta" if lay == "0p4-beta" else "0p25"
+    if not hasattr(odc, "_ORIG_HOURLY"):
+        odc._ORIG_HOURLY = odc.HOURLY_PATTERN
+    # Feb 2024 files sit under /0p25/ without the /ifs/ folder; the client always adds {model}/
+    odc.HOURLY_PATTERN = odc._ORIG_HOURLY.replace("{model}/", "") if lay == "0p25" else odc._ORIG_HOURLY
     last = None
     for attempt in range(tries):
         for src in SOURCES:
             target = os.path.join(tmpdir, f"s{step:03d}_{src}.grib2")
             try:
-                client = Client(source=src, model="ifs", resol="0p25",
+                client = Client(source=src, model="ifs", resol=resol,
                                 maximum_retries=4, retry_after=15)
                 client.retrieve(date=init.strftime("%Y%m%d"), time=init.hour,
                                 stream="enfo", type="pf", param="2t",
@@ -389,6 +420,8 @@ def run(args, downloader=download_step, decoder=decode_file, waiter=wait_for_run
         print(f"{stem} already processed, nothing to do.")
         return 0
     print(f"Run {init:%Y-%m-%d %HZ}: {len(cities)} cities", flush=True)
+    if waiter is wait_for_run:
+        set_layout(init)
     got = waiter(init, args.wait_minutes)
     if got is None:
         print("Run not complete within the wait window.", file=sys.stderr)

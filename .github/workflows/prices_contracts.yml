@@ -1,0 +1,23 @@
+name: NG contract prices
+
+# Daily prices per NG contract (Yahoo) for the swing backtest. Start by pushing requests/prices.txt: "Y0 Y1"
+on:
+  push:
+    paths: ["requests/prices.txt"]
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install requests
+      - run: python prices_contracts.py $(head -1 requests/prices.txt)
+      - name: Commit
+        run: |
+          git config user.name "ifs-bot"; git config user.email "ifs-bot@users.noreply.github.com"
+          git add data/prices/contracts
+          git commit -q -m "NG contract daily prices" || exit 0
+          for i in 1 2 3 4 5; do git pull -q --rebase && git push -q && break; sleep 10; done
